@@ -5,10 +5,11 @@ import javax.inject.Singleton
 import akka.actor.{Props, ActorSystem}
 import com.cyberdolphins.slime.OutgoingOnlySlackBotActor
 import com.cyberdolphins.slime.SlackBotActor.{SlackBotConfig, Connect}
-import com.cyberdolphins.slime.outgoing.ComplexOutboundMessage
+import com.cyberdolphins.slime.outgoing.{SimpleOutboundMessage, Outbound, ComplexOutboundMessage}
 import com.google.inject.Inject
 import com.typesafe.config.Config
 import model._
+import org.joda.time.DateTime
 import play.api.{Configuration, Logger}
 import play.api.mvc.{Action, Controller}
 import scala.collection.JavaConversions._
@@ -38,23 +39,64 @@ class Application @Inject()(private val system: ActorSystem,
 
   private val logger = Logger(getClass)
 
-  private val formatMessage: PartialFunction[(Channel, Event), ComplexOutboundMessage] = {
+  private def linkToCommit(repoName: String, sha: String): String = {
+    s"<$codebragUrl/#/$repoName/commits/$sha|${sha.take(7)}>"
+  }
 
-    case (channel, e: CommitsLoadedEvent) if e.newCommits.nonEmpty =>
+  private def linkToCommit(repoName: String, commit: Commit): String = {
+    linkToCommit(repoName, commit.sha)
+  }
+
+  private def linkToCommit(commit: CommitInfo): String = {
+    linkToCommit(commit.repoName, commit.sha)
+  }
+
+  private val formatMessage: PartialFunction[(Channel, Event), Outbound] = {
+
+    case (channel, CommitsLoadedEvent(repoName, currentSHA, newCommits, hookName, hookDate)) if newCommits.nonEmpty =>
+
+      val title = s"[*$repoName*] New commit(s) to review:"
+
+      val attachments = newCommits.map {
+        case Commit(sha, message, author, _, _) =>
+
+          // <http://www.foo.com|www.foo.com>
+
+          val link = linkToCommit(repoName, sha)
+
+          Attachment(s"$link: ${message.trim} - by *$author*")
+            .withMarkdownIn(MarkdownInValues.text)
+            .withColor(Color.warning)
+      }
 
       ComplexOutboundMessage(
-        s"[*${e.repoName}*] New commit(s) to review:", channel,
-        e.newCommits.map {
-          case Commit(sha, message, author, _, _) =>
+        title, channel,
+        attachments: _*)
 
-            // <http://www.foo.com|www.foo.com>
 
-            val link = s"<$codebragUrl/#/${e.repoName}/commits/$sha|${sha.take(7)}>"
+    case (channel, CommentAddedEvent(commitInfo, commentedBy, comment, hookName, hookDate)) =>
 
-            Attachment(s"$link: ${message.trim} - by *$author*")
-              .withMarkdownIn(MarkdownInValues.text)
-              .withColor(Color.warning)
-        }: _*)
+      val link = linkToCommit(commitInfo)
+
+      val title = s"[*${commitInfo.repoName}*] New comment to *${commitInfo.authorName}'s* commit:"
+
+      val attachment = Attachment(s"$link: ${comment.message.trim} - by *${commentedBy.name}*")
+        .withMarkdownIn(MarkdownInValues.text)
+        .withColor(Color.warning)
+
+      ComplexOutboundMessage(title, channel, attachment)
+
+    case (channel, CommitReviewedEvent(commitInfo, reviewedBy, hookName, hookDate)) =>
+
+      val link = linkToCommit(commitInfo)
+
+      val title = s"[*${commitInfo.repoName}*] My name is *${reviewedBy.name}* and I approve this commit:"
+
+      val attachment = Attachment(s"$link: ${commitInfo.message.trim} - by *${commitInfo.authorName}*")
+        .withMarkdownIn(MarkdownInValues.text)
+        .withColor(Color.good)
+
+      ComplexOutboundMessage(title, channel, attachment)
   }
 
   private val slack = system.actorOf(Props[OutgoingOnlySlackBotActor])
