@@ -23,16 +23,14 @@ import scala.concurrent.ExecutionContext
 
 @Singleton
 class Application @Inject()(private val system: ActorSystem,
-                            private val config: Configuration)
+                            val config: Configuration)
                            (implicit private val ec: ExecutionContext)
-  extends Controller {
+  extends Controller with ConfigHelper {
+
+  private def `6hoursAgo` = DateTime.now.minusHours(6)
 
   private val slackToken = config.getString("slack.token")
     .getOrElse(throw new RuntimeException("slack.token configuration key missing"))
-
-  private val channels = config.getStringList("slack.channels")
-    .getOrElse(throw new RuntimeException("slack.channels configuration key missing"))
-    .map(Channel(_))
 
   private val codebragUrl = config.getString("codebrag.url")
     .getOrElse(throw new RuntimeException("codebrag.url configuration key missing"))
@@ -51,13 +49,16 @@ class Application @Inject()(private val system: ActorSystem,
     linkToCommit(commit.repoName, commit.sha)
   }
 
-  private val formatMessage: PartialFunction[(Channel, Event), Outbound] = {
+  private val prepareMessages: PartialFunction[Event, List[Outbound]] = {
 
-    case (channel, CommitsLoadedEvent(repoName, currentSHA, newCommits, hookName, hookDate)) if newCommits.nonEmpty =>
+    case CommitsLoadedEvent(repoName, currentSHA, newCommits, hookName, hookDate) if newCommits.nonEmpty =>
 
       val title = s"[*$repoName*] New commit(s) to review:"
 
-      val attachments = newCommits.map {
+      val onlyRecent = newCommits.filter(_.date.isAfter(`6hoursAgo`))
+
+      val attachments = onlyRecent.map {
+
         case Commit(sha, message, author, _, _) =>
 
           // <http://www.foo.com|www.foo.com>
@@ -69,12 +70,13 @@ class Application @Inject()(private val system: ActorSystem,
             .withColor(Color.warning)
       }
 
-      ComplexOutboundMessage(
-        title, channel,
-        attachments: _*)
+      route(repoName) {
+        ComplexOutboundMessage(
+          title, _,
+          attachments: _*)
+      }
 
-
-    case (channel, CommentAddedEvent(commitInfo, commentedBy, comment, hookName, hookDate)) =>
+    case CommentAddedEvent(commitInfo, commentedBy, comment, hookName, hookDate) =>
 
       val link = linkToCommit(commitInfo)
 
@@ -84,9 +86,11 @@ class Application @Inject()(private val system: ActorSystem,
         .withMarkdownIn(MarkdownInValues.text)
         .withColor(Color.warning)
 
-      ComplexOutboundMessage(title, channel, attachment)
+      route(commitInfo.repoName) {
+        ComplexOutboundMessage(title, _, attachment)
+      }
 
-    case (channel, CommitReviewedEvent(commitInfo, reviewedBy, hookName, hookDate)) =>
+    case CommitReviewedEvent(commitInfo, reviewedBy, hookName, hookDate) =>
 
       val link = linkToCommit(commitInfo)
 
@@ -96,7 +100,9 @@ class Application @Inject()(private val system: ActorSystem,
         .withMarkdownIn(MarkdownInValues.text)
         .withColor(Color.good)
 
-      ComplexOutboundMessage(title, channel, attachment)
+      route(commitInfo.repoName) {
+        ComplexOutboundMessage(title, _, attachment)
+      }
   }
 
   private val slack = system.actorOf(Props[OutgoingOnlySlackBotActor])
@@ -109,10 +115,10 @@ class Application @Inject()(private val system: ActorSystem,
 
       val event = request.body.as[Event]
 
-      channels.foreach {
-        case channel if formatMessage.isDefinedAt(channel, event)
-          => slack ! formatMessage(channel, event)
-        case _ => //ignore
+      if(prepareMessages.isDefinedAt(event)) {
+        prepareMessages(event).foreach {
+          slack ! _
+        }
       }
 
     Ok
