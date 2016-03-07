@@ -144,7 +144,7 @@ package object model {
   case class Comment(message: String,
                      postingTime: DateTime,
                      fileName: String,
-                     lineNumber: Int)
+                     lineNumber: Option[Int])
 
   case class CommentAddedEvent(commitInfo: CommitInfo,
                                commentedBy: By,

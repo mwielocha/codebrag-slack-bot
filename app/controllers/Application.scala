@@ -55,26 +55,30 @@ class Application @Inject()(private val system: ActorSystem,
 
       val title = s"[*$repoName*] New commit(s) to review:"
 
-      val onlyRecent = newCommits.filter(_.date.isAfter(`6hoursAgo`))
+      newCommits.filter(_.date.isAfter(`6hoursAgo`)) match {
+        case Nil => Nil
+        case onlyRecent =>
 
-      val attachments = onlyRecent.map {
+          val attachments = onlyRecent.map {
 
-        case Commit(sha, message, author, _, _) =>
+            case Commit(sha, message, author, _, _) =>
 
-          // <http://www.foo.com|www.foo.com>
+              // <http://www.foo.com|www.foo.com>
 
-          val link = linkToCommit(repoName, sha)
+              val link = linkToCommit(repoName, sha)
 
-          Attachment(s"$link: ${message.trim} - by *$author*")
-            .withMarkdownIn(MarkdownInValues.text)
-            .withColor(Color.warning)
+              Attachment(s"$link: ${message.trim} - by *$author*")
+                .withMarkdownIn(MarkdownInValues.text)
+                .withColor(Color.warning)
+          }
+
+          route(repoName) {
+            ComplexOutboundMessage(
+              title, _,
+              attachments: _*)
+          }
       }
 
-      route(repoName) {
-        ComplexOutboundMessage(
-          title, _,
-          attachments: _*)
-      }
 
     case CommentAddedEvent(commitInfo, commentedBy, comment, hookName, hookDate) =>
 
