@@ -143,7 +143,7 @@ package object model {
 
   case class Comment(message: String,
                      postingTime: DateTime,
-                     fileName: String,
+                     fileName: Option[String],
                      lineNumber: Option[Int])
 
   case class CommentAddedEvent(commitInfo: CommitInfo,
